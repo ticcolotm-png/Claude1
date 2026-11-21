@@ -71,6 +71,11 @@
         </div>
       </div>
 
+      <div class="retouch-layer" id="retouchLayer" hidden>
+        <canvas id="strokeCanvas"></canvas>
+        <div class="brush-cursor" id="brushCursor" hidden></div>
+      </div>
+
       <div class="badge" id="compareBadge" hidden>Vorher</div>
       <div class="busy" id="busy" hidden><span class="spinner"></span><span id="busyText">Wird verarbeitet …</span></div>
       <div class="drop-hint" aria-hidden="true"><span>Foto hier ablegen</span></div>
@@ -80,6 +85,7 @@
       <nav class="tabs" role="tablist">
         <button role="tab" class="tab" data-tab="adjust" aria-selected="true">Anpassen</button>
         <button role="tab" class="tab" data-tab="filters" aria-selected="false">Filter</button>
+        <button role="tab" class="tab" data-tab="retouch" aria-selected="false">Retusche</button>
         <button role="tab" class="tab" data-tab="crop" aria-selected="false">Zuschneiden</button>
       </nav>
 
@@ -95,6 +101,21 @@
           <div class="slider-head"><label for="presetStrength">Filterstärke</label><output id="presetStrengthOut">100</output></div>
           <input type="range" id="presetStrength" min="0" max="100" step="1" value="100">
         </div>
+      </div>
+
+      <div class="tab-panel" data-panel="retouch" hidden>
+        <h3>Fleckenentferner</h3>
+        <p class="help">Male im Bild über Flecken, Pickel, Staub oder kleine störende Objekte. Beim Loslassen wird die Stelle automatisch mit passender Struktur aus der Umgebung aufgefüllt.</p>
+        <div class="slider-row">
+          <div class="slider-head"><label for="brushSize">Pinselgröße</label><output id="brushSizeOut">30</output></div>
+          <input type="range" id="brushSize" min="6" max="160" step="1" value="30">
+        </div>
+        <ul class="tips">
+          <li>Pinsel etwas größer als den Fleck wählen.</li>
+          <li>Mehrere kurze Striche wirken oft besser als ein langer.</li>
+          <li>Jeder Strich lässt sich mit <kbd>Strg</kbd>+<kbd>Z</kbd> rückgängig machen.</li>
+          <li>Tasten <kbd>[</kbd> und <kbd>]</kbd> ändern die Pinselgröße.</li>
+        </ul>
       </div>
 
       <div class="tab-panel" data-panel="crop" hidden>

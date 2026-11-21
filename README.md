@@ -30,6 +30,12 @@ python3 -m http.server 8000
 - 12 Vorlagen (Lebendig, Warm, Kühl, Vintage, Drama, Schwarzweiß, Noir, Verblasst, Sonnig, Analog, Pop …) mit Live-Vorschau
 - Regelbare Filterstärke
 
+**Retusche – Fleckenentferner**
+- Mit dem Pinsel über Flecken, Pickel, Staub oder kleine störende Objekte malen
+- Die App sucht automatisch eine passende Stelle in der Umgebung, übernimmt deren Struktur und gleicht Farbe und Helligkeit nahtlos an (ähnlich dem Bereichsreparatur-Pinsel)
+- Pinselgröße per Regler oder mit <kbd>[</kbd> / <kbd>]</kbd>; jeder Strich ist einzeln rückgängig zu machen
+- Am besten geeignet für Flecken auf Haut, Himmel, Wänden und ähnlich gleichmäßigen Flächen; in sehr unruhigen, kontrastreichen Mustern ist das Ergebnis nur eine Annäherung
+
 **Zuschneiden & Transformieren**
 - Freier Zuschnitt oder feste Seitenverhältnisse (Original, 1:1, 4:3, 3:4, 16:9, 9:16, 3:2, 2:3) mit Drittel-Raster
 - 90° drehen, horizontal/vertikal spiegeln
@@ -51,6 +57,7 @@ python3 -m http.server 8000
 | <kbd>Strg</kbd>+<kbd>Umschalt</kbd>+<kbd>Z</kbd> / <kbd>Strg</kbd>+<kbd>Y</kbd> | Wiederholen |
 | <kbd>V</kbd> (halten) | Vorher anzeigen |
 | <kbd>Enter</kbd> | Zuschnitt anwenden (im Tab „Zuschneiden“) |
+| <kbd>[</kbd> / <kbd>]</kbd> | Pinsel verkleinern / vergrößern (im Tab „Retusche“) |
 
 Auf dem Mac jeweils <kbd>⌘</kbd> statt <kbd>Strg</kbd>.
 
@@ -65,5 +72,5 @@ Auf dem Mac jeweils <kbd>⌘</kbd> statt <kbd>Strg</kbd>.
 | --- | --- |
 | `index.html` | Oberfläche |
 | `styles.css` | Gestaltung (inkl. Mobil-Layout) |
-| `app.js` | Bildverarbeitung, Verlauf, Zuschneiden, Export |
+| `app.js` | Bildverarbeitung, Retusche, Verlauf, Zuschneiden, Export |
 | `sw.js`, `manifest.webmanifest`, `icon.svg` | Installierbare App / Offline-Nutzung |

@@ -225,6 +225,22 @@ body.dragging .drop-hint { display: grid; }
   pointer-events: none;
 }
 
+/* ---------- Retusche ---------- */
+.retouch-layer { position: absolute; touch-action: none; cursor: none; overflow: hidden; }
+.retouch-layer[hidden] { display: none; }
+#strokeCanvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .45; pointer-events: none; }
+.brush-cursor {
+  position: absolute; left: 0; top: 0;
+  border-radius: 50%;
+  border: 1.5px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .6), inset 0 0 0 1px rgba(0, 0, 0, .35);
+  pointer-events: none;
+}
+.brush-cursor[hidden] { display: none; }
+.help { color: var(--muted); margin: 0 0 12px; }
+.tips { margin: 14px 0 0; padding-left: 18px; color: var(--faint); font-size: 12.5px; }
+.tips li { margin: 4px 0; }
+
 /* ---------- Seitenleiste ---------- */
 .panel {
   min-height: 0;
@@ -236,11 +252,12 @@ body.no-image .panel .tab-panel { opacity: .4; pointer-events: none; }
 
 .tabs {
   flex: none;
-  display: grid; grid-template-columns: repeat(3, 1fr);
-  gap: 4px; padding: 10px 12px;
+  display: flex;
+  gap: 2px; padding: 10px 10px;
   border-bottom: 1px solid var(--border);
 }
 .tab {
+  flex: 1 1 auto; padding: 0 6px;
   height: 34px; border: 0; border-radius: 8px;
   background: transparent; color: var(--muted);
   font-weight: 550; cursor: pointer;

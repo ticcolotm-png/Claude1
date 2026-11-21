@@ -311,6 +311,12 @@
     return out;
   }
 
+  function cloneCanvas(src) {
+    const c = makeCanvas(src.width, src.height);
+    c.getContext('2d').drawImage(src, 0, 0);
+    return c;
+  }
+
   function fitSize(w, h, maxEdge) {
     const s = Math.min(1, maxEdge / Math.max(w, h));
     return [Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s))];
@@ -612,7 +618,7 @@
 
     updateSizeInfo();
     render();
-    requestAnimationFrame(updateCropOverlay);
+    requestAnimationFrame(updateOverlays);
   }
 
   // =====================================================================
@@ -637,15 +643,29 @@
     updateButtons();
   }
 
-  function restore(entry) {
-    const baseChanged = entry.base !== state.base;
+  /** Retusche-Schritte verändern state.base direkt; im Verlauf liegen nur die betroffenen Ausschnitte. */
+  function commitPatch(patch) {
+    state.history = state.history.slice(0, state.hIndex + 1);
+    state.history.push({ ...snapshot(), patch });
+    if (state.history.length > HISTORY_LIMIT) state.history.shift();
+    state.hIndex = state.history.length - 1;
+    updateButtons();
+  }
+
+  function applyPatch(entry, forward) {
+    const { x, y, before, after } = entry.patch;
+    entry.base.getContext('2d').putImageData(forward ? after : before, x, y);
+  }
+
+  function restore(entry, pixelsChanged = false) {
+    const baseChanged = entry.base !== state.base || pixelsChanged;
     state.base = entry.base;
     state.adj = { ...entry.adj };
     state.preset = entry.preset ? { ...entry.preset } : null;
     syncAllSliders();
     syncPresetUI();
     if (baseChanged) {
-      resetCropRect();
+      if (!pixelsChanged) resetCropRect();
       rebuildPreview();
     } else {
       scheduleRender();
@@ -655,14 +675,18 @@
 
   function undo() {
     if (state.hIndex <= 0) return;
+    const cur = state.history[state.hIndex];
+    if (cur.patch) applyPatch(cur, false);
     state.hIndex--;
-    restore(state.history[state.hIndex]);
+    restore(state.history[state.hIndex], !!cur.patch);
   }
 
   function redo() {
     if (state.hIndex >= state.history.length - 1) return;
     state.hIndex++;
-    restore(state.history[state.hIndex]);
+    const next = state.history[state.hIndex];
+    if (next.patch) applyPatch(next, true);
+    restore(next, !!next.patch);
   }
 
   function updateButtons() {
@@ -726,8 +750,8 @@
     bg.drawImage(source, 0, 0, tw, th);
     if (source.close) source.close();
 
-    state.base = base;
     state.original = base;
+    state.base = cloneCanvas(base);
     state.adj = { ...DEFAULTS };
     state.preset = null;
     state.fileName = name;
@@ -962,10 +986,11 @@
       Object.assign(state.crop, { x: (1 - w) / 2, y: (1 - h) / 2, w, h });
     }
     $$('.chip').forEach(c => c.classList.toggle('active', c.dataset.key === state.crop.ratioKey));
-    if (rerender) updateCropOverlay();
+    if (rerender) updateOverlays();
   }
 
-  function updateCropOverlay() {
+  function updateOverlays() {
+    updateRetouchLayer();
     if (state.tab !== 'crop' || !state.base || canvas.hidden) {
       cropLayer.hidden = true;
       return;
@@ -1039,12 +1064,336 @@
         };
       }
       Object.assign(state.crop, { x: r.x / W, y: r.y / H, w: r.w / W, h: r.h / H });
-      updateCropOverlay();
+      updateOverlays();
     });
 
     const end = () => { drag = null; };
     cropBox.addEventListener('pointerup', end);
     cropBox.addEventListener('pointercancel', end);
+  }
+
+  // =====================================================================
+  //  Retusche: Fleckenentferner (Reparaturpinsel)
+  // =====================================================================
+  /**
+   * Entfernt den übermalten Bereich:
+   * 1. Um die Maske herum wird ein Kontextring gebildet.
+   * 2. In der Umgebung wird die Stelle gesucht, deren Ring dem Zielring am ähnlichsten ist.
+   * 3. Deren Struktur wird übernommen; der Farb-/Helligkeitsunterschied am Rand wird
+   *    per Laplace-Interpolation (wie beim Poisson-Blending) glatt ins Innere verteilt.
+   * Arbeitet direkt auf state.base und gibt einen Patch für den Verlauf zurück.
+   */
+  function healStroke(points, radius) {
+    const b = state.base;
+    const W = b.width, H = b.height;
+    const R = Math.max(1.5, radius);
+    const band = Math.max(3, Math.round(R * 0.6));
+    const reach = R + band;
+
+    // Pinselstempel entlang des Strichs
+    const stamps = [];
+    const spacing = Math.max(1, R / 4);
+    points.forEach((p, i) => {
+      if (i === 0) { stamps.push(p); return; }
+      const q = points[i - 1];
+      const steps = Math.ceil(Math.hypot(p.x - q.x, p.y - q.y) / spacing);
+      for (let k = 1; k <= steps; k++) stamps.push({ x: q.x + (p.x - q.x) * k / steps, y: q.y + (p.y - q.y) * k / steps });
+    });
+
+    let mx0 = Infinity, my0 = Infinity, mx1 = -Infinity, my1 = -Infinity;
+    for (const st of stamps) {
+      mx0 = Math.min(mx0, st.x - R); my0 = Math.min(my0, st.y - R);
+      mx1 = Math.max(mx1, st.x + R); my1 = Math.max(my1, st.y + R);
+    }
+    const pad = band + 2;
+    const rx0 = clamp(Math.floor(mx0 - pad), 0, W), ry0 = clamp(Math.floor(my0 - pad), 0, H);
+    const rx1 = clamp(Math.ceil(mx1 + pad), 0, W), ry1 = clamp(Math.ceil(my1 + pad), 0, H);
+    const rw = rx1 - rx0, rh = ry1 - ry0;
+    if (rw < 2 || rh < 2) return null;
+    const n = rw * rh;
+
+    // Abstandsfeld zur Pinselspur → Maske (innen) und Kontextring (außen)
+    const dist = new Float32Array(n).fill(Infinity);
+    for (const st of stamps) {
+      const ya = Math.max(ry0, Math.floor(st.y - reach)), yb = Math.min(ry1 - 1, Math.ceil(st.y + reach));
+      const xa = Math.max(rx0, Math.floor(st.x - reach)), xb = Math.min(rx1 - 1, Math.ceil(st.x + reach));
+      for (let y = ya; y <= yb; y++) {
+        const dy = y + 0.5 - st.y;
+        for (let x = xa; x <= xb; x++) {
+          const dx = x + 0.5 - st.x;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          const i = (y - ry0) * rw + (x - rx0);
+          if (d < dist[i]) dist[i] = d;
+        }
+      }
+    }
+    const inMask = new Uint8Array(n);
+    const maskList = [], ringList = [];
+    for (let i = 0; i < n; i++) {
+      if (dist[i] <= R) { inMask[i] = 1; maskList.push(i); }
+      else if (dist[i] <= reach) ringList.push(i);
+    }
+    if (!maskList.length) return null;
+
+    // Randpixel (außerhalb, direkt neben der Maske) und Nachbarn für die Laplace-Iteration
+    const isBound = new Uint8Array(n);
+    const boundList = [];
+    const nbs = new Int32Array(maskList.length * 4).fill(-1);
+    maskList.forEach((i, k) => {
+      const x = i % rw, y = (i / rw) | 0;
+      const cand = [x > 0 ? i - 1 : -1, x < rw - 1 ? i + 1 : -1, y > 0 ? i - rw : -1, y < rh - 1 ? i + rw : -1];
+      cand.forEach((j, c) => {
+        if (j < 0) return;
+        nbs[k * 4 + c] = j;
+        if (!inMask[j] && !isBound[j]) { isBound[j] = 1; boundList.push(j); }
+      });
+    });
+
+    // Suchbereich lesen
+    const extW = mx1 - mx0 + band, extH = my1 - my0 + band;
+    const S = Math.max(extW, extH);
+    const maxOff = Math.ceil(S * 3.3) + 2;
+    const ax0 = clamp(rx0 - maxOff, 0, W), ay0 = clamp(ry0 - maxOff, 0, H);
+    const ax1 = clamp(rx1 + maxOff, 0, W), ay1 = clamp(ry1 + maxOff, 0, H);
+    const aw = ax1 - ax0;
+    const src = b.getContext('2d').getImageData(ax0, ay0, aw, ay1 - ay0).data;
+    const at = i => (((ry0 + ((i / rw) | 0)) - ay0) * aw + (rx0 + (i % rw)) - ax0) * 4; // Region-Index → src-Index
+
+    // Kontextring für den Vergleich ausdünnen
+    const ringStep = Math.max(1, Math.floor(ringList.length / 700));
+    const samples = [];
+    for (let k = 0; k < ringList.length; k += ringStep) samples.push(at(ringList[k]));
+
+    const score = (ox, oy) => {
+      if (Math.abs(ox) < extW && Math.abs(oy) < extH) return Infinity;           // überlappt den Fleck
+      if (rx0 + ox < ax0 || ry0 + oy < ay0 || rx1 + ox > ax1 || ry1 + oy > ay1) return Infinity;
+      const off = (oy * aw + ox) * 4;
+      let sum = 0, eT = 0, eS = 0;
+      for (const t of samples) {
+        const u = t + off;
+        const dr = src[t] - src[u], dg = src[t + 1] - src[u + 1], db = src[t + 2] - src[u + 2];
+        sum += dr * dr + dg * dg + db * db;
+        // Strukturstärke (Gradient) von Ziel und Quelle
+        eT += Math.abs(src[t + 1] - src[t + 5]) + Math.abs(src[t + 1] - src[t + 1 + aw * 4]);
+        eS += Math.abs(src[u + 1] - src[u + 5]) + Math.abs(src[u + 1] - src[u + 1 + aw * 4]);
+      }
+      const k = samples.length;
+      const texDiff = (eT - eS) / k;
+      return sum / k + 10 * texDiff * texDiff; // glatte Quelle für strukturierte Umgebung bestrafen
+    };
+
+    let best = { s: Infinity, ox: 0, oy: 0 };
+    if (samples.length) {
+      [1.1, 1.6, 2.3, 3.2].forEach((f, ring) => {
+        for (let a = 0; a < 16; a++) {
+          const ang = (a / 16) * Math.PI * 2 + ring * 0.2;
+          const ox = Math.round(Math.cos(ang) * S * f), oy = Math.round(Math.sin(ang) * S * f);
+          const sc = score(ox, oy) * (1 + 0.06 * ring); // nähere Quellen leicht bevorzugen
+          if (sc < best.s) best = { s: sc, ox, oy };
+        }
+      });
+      // Feinsuche um den besten Kandidaten
+      for (let step = Math.max(1, Math.round(S * 0.25)); isFinite(best.s); step = Math.floor(step / 2)) {
+        const c = best;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const sc = score(c.ox + dx * step, c.oy + dy * step);
+          if (sc < best.s) best = { s: sc, ox: c.ox + dx * step, oy: c.oy + dy * step };
+        }
+        if (step === 1) break;
+      }
+    }
+    const hasSrc = isFinite(best.s);
+    const off = hasSrc ? (best.oy * aw + best.ox) * 4 : 0;
+    const srcVal = (si, c) => (hasSrc ? src[si + off + c] : 0);
+
+    // Randdifferenz Ziel − Quelle, über eine kleine Umgebung gemittelt (ohne Maskenpixel),
+    // damit feine kontrastreiche Strukturen am Rand nicht als Fleck ins Innere verlaufen
+    const D = new Float32Array(n * 3);
+    const win = Math.max(1, Math.min(3, Math.round(R / 6)));
+    for (const j of boundList) {
+      const jx = j % rw, jy = (j / rw) | 0;
+      let cnt = 0, s0 = 0, s1 = 0, s2 = 0;
+      for (let yy = Math.max(0, jy - win); yy <= Math.min(rh - 1, jy + win); yy++) {
+        for (let xx = Math.max(0, jx - win); xx <= Math.min(rw - 1, jx + win); xx++) {
+          const k = yy * rw + xx;
+          if (inMask[k]) continue;
+          const t = at(k);
+          s0 += src[t] - srcVal(t, 0); s1 += src[t + 1] - srcVal(t, 1); s2 += src[t + 2] - srcVal(t, 2);
+          cnt++;
+        }
+      }
+      D[j * 3] = s0 / cnt; D[j * 3 + 1] = s1 / cnt; D[j * 3 + 2] = s2 / cnt;
+    }
+
+    // Startwert: inverse Distanzgewichtung der Randdifferenz (Shepard)
+    const bStep = Math.max(1, Math.floor(boundList.length / 64));
+    const bs = [];
+    for (let k = 0; k < boundList.length; k += bStep) bs.push(boundList[k]);
+    for (const i of maskList) {
+      const x = i % rw, y = (i / rw) | 0;
+      let ws = 0, s0 = 0, s1 = 0, s2 = 0;
+      for (const j of bs) {
+        const dx = (j % rw) - x, dy = ((j / rw) | 0) - y;
+        const w = 1 / (dx * dx + dy * dy + 0.5);
+        ws += w; s0 += w * D[j * 3]; s1 += w * D[j * 3 + 1]; s2 += w * D[j * 3 + 2];
+      }
+      D[i * 3] = s0 / ws; D[i * 3 + 1] = s1 / ws; D[i * 3 + 2] = s2 / ws;
+    }
+
+    // Laplace glätten (Gauß-Seidel)
+    const iters = clamp(Math.round(Math.sqrt(maskList.length) * 1.5), 30, 160);
+    for (let it = 0; it < iters; it++) {
+      for (let k = 0; k < maskList.length; k++) {
+        const i = maskList[k];
+        let cnt = 0, s0 = 0, s1 = 0, s2 = 0;
+        for (let c = 0; c < 4; c++) {
+          const j = nbs[k * 4 + c];
+          if (j < 0) continue;
+          cnt++; s0 += D[j * 3]; s1 += D[j * 3 + 1]; s2 += D[j * 3 + 2];
+        }
+        if (cnt) { D[i * 3] = s0 / cnt; D[i * 3 + 1] = s1 / cnt; D[i * 3 + 2] = s2 / cnt; }
+      }
+    }
+
+    // Ergebnis zusammensetzen, Kante 1,5 px weich auslaufen lassen
+    const ctxB = b.getContext('2d');
+    const before = ctxB.getImageData(rx0, ry0, rw, rh);
+    const after = new ImageData(new Uint8ClampedArray(before.data), rw, rh);
+    const out = after.data;
+    for (const i of maskList) {
+      const t = at(i), o = i * 4;
+      const a = clamp((R - dist[i]) / 1.5, 0, 1);
+      for (let c = 0; c < 3; c++) {
+        const healed = srcVal(t, c) + D[i * 3 + c];
+        out[o + c] = before.data[o + c] + (healed - before.data[o + c]) * a;
+      }
+    }
+    ctxB.putImageData(after, rx0, ry0);
+    return { x: rx0, y: ry0, before, after };
+  }
+
+  // ---------- Pinsel-Interaktion ----------
+  const retouchLayer = $('#retouchLayer');
+  const strokeCanvas = $('#strokeCanvas');
+  const brushCursor = $('#brushCursor');
+
+  function brushRadius() {
+    return Number($('#brushSize').value) / 2;
+  }
+
+  function updateRetouchLayer() {
+    if (state.tab !== 'retouch' || !state.base || canvas.hidden) {
+      retouchLayer.hidden = true;
+      return;
+    }
+    const c = canvas.getBoundingClientRect();
+    const s = stage.getBoundingClientRect();
+    retouchLayer.hidden = false;
+    Object.assign(retouchLayer.style, {
+      left: `${c.left - s.left}px`, top: `${c.top - s.top}px`,
+      width: `${c.width}px`, height: `${c.height}px`,
+    });
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.round(c.width * dpr), h = Math.round(c.height * dpr);
+    if (strokeCanvas.width !== w || strokeCanvas.height !== h) {
+      strokeCanvas.width = w;
+      strokeCanvas.height = h;
+    }
+  }
+
+  function initRetouch() {
+    const size = $('#brushSize');
+    const syncSize = () => {
+      $('#brushSizeOut').textContent = size.value;
+      paintTrack(size);
+      const d = Number(size.value);
+      brushCursor.style.width = brushCursor.style.height = `${d}px`;
+    };
+    size.addEventListener('input', syncSize);
+    syncSize();
+
+    let stroke = null;
+    let busy = false;
+    const local = e => {
+      const r = retouchLayer.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top, W: r.width, H: r.height };
+    };
+    const moveCursor = p => {
+      brushCursor.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -50%)`;
+    };
+    const drawSegment = (a, b) => {
+      const g = strokeCanvas.getContext('2d');
+      const dpr = strokeCanvas.width / a.W;
+      g.strokeStyle = g.fillStyle = '#ff8a4c';
+      g.lineCap = g.lineJoin = 'round';
+      g.lineWidth = brushRadius() * 2 * dpr;
+      g.beginPath();
+      g.moveTo(a.x * dpr, a.y * dpr);
+      g.lineTo(b.x * dpr, b.y * dpr);
+      g.stroke();
+    };
+
+    retouchLayer.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || busy) return;
+      e.preventDefault();
+      retouchLayer.setPointerCapture(e.pointerId);
+      const p = local(e);
+      stroke = [p];
+      moveCursor(p);
+      drawSegment(p, p);
+    });
+
+    retouchLayer.addEventListener('pointermove', e => {
+      const p = local(e);
+      brushCursor.hidden = false;
+      moveCursor(p);
+      if (!stroke) return;
+      const last = stroke[stroke.length - 1];
+      if (Math.hypot(p.x - last.x, p.y - last.y) < 1.5) return;
+      stroke.push(p);
+      drawSegment(last, p);
+    });
+
+    retouchLayer.addEventListener('pointerleave', () => { if (!stroke) brushCursor.hidden = true; });
+
+    const finish = async () => {
+      if (!stroke) return;
+      const pts = stroke;
+      stroke = null;
+      busy = true;
+      const b = state.base;
+      const scale = b.width / pts[0].W;
+      const basePts = pts.map(p => ({ x: clamp(p.x * scale, 0, b.width), y: clamp(p.y * scale, 0, b.height) }));
+      const radius = brushRadius() * scale;
+      const big = radius * radius * pts.length > 400_000;
+      if (big) { setBusy(true, 'Fleck wird entfernt …'); await nextFrame(); }
+      try {
+        const patch = healStroke(basePts, radius);
+        if (patch) {
+          commitPatch(patch);
+          rebuildPreview();
+        }
+      } finally {
+        strokeCanvas.getContext('2d').clearRect(0, 0, strokeCanvas.width, strokeCanvas.height);
+        if (big) setBusy(false);
+        busy = false;
+      }
+    };
+    retouchLayer.addEventListener('pointerup', finish);
+    retouchLayer.addEventListener('pointercancel', () => {
+      stroke = null;
+      strokeCanvas.getContext('2d').clearRect(0, 0, strokeCanvas.width, strokeCanvas.height);
+    });
+
+    // [ und ] ändern die Pinselgröße
+    window.addEventListener('keydown', e => {
+      if (state.tab !== 'retouch' || /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== 'range') return;
+      if (e.key === '[' || e.key === ']') {
+        size.value = Number(size.value) + (e.key === ']' ? 4 : -4);
+        syncSize();
+      }
+    });
   }
 
   // =====================================================================
@@ -1123,7 +1472,7 @@
     $$('.tab').forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === tab)));
     $$('.tab-panel').forEach(p => { p.hidden = p.dataset.panel !== tab; });
     if (tab === 'filters' && state.thumbsDirty) renderThumbs();
-    updateCropOverlay();
+    updateOverlays();
   }
 
   // =====================================================================
@@ -1156,8 +1505,8 @@
     $('#btnUndo').addEventListener('click', undo);
     $('#btnRedo').addEventListener('click', redo);
     $('#btnResetAll').addEventListener('click', () => {
-      if (state.base === state.original && isDefaultAdj()) return;
-      state.base = state.original;
+      if (state.hIndex === 0 && isDefaultAdj()) return;
+      state.base = cloneCanvas(state.original);
       state.adj = { ...DEFAULTS };
       state.preset = null;
       syncAllSliders();
@@ -1263,7 +1612,7 @@
     window.addEventListener('keyup', e => { if (e.key.toLowerCase() === 'v') setCompare(false); });
     window.addEventListener('blur', () => setCompare(false));
 
-    new ResizeObserver(() => updateCropOverlay()).observe(stage);
+    new ResizeObserver(() => updateOverlays()).observe(stage);
   }
 
   // =====================================================================
@@ -1275,6 +1624,7 @@
   syncPresetUI();
   bindEvents();
   initCropInteraction();
+  initRetouch();
   updateButtons();
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
@@ -1282,5 +1632,5 @@
   }
 
   // für Tests/Debugging
-  window.__fotolabor = { state, processPixels };
+  window.__fotolabor = { state, processPixels, loadFile };
 })();
