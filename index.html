@@ -60,6 +60,7 @@
       </div>
 
       <canvas id="canvas" hidden></canvas>
+      <canvas id="detailCanvas" hidden></canvas>
 
       <div class="crop-layer" id="cropLayer" hidden>
         <div class="crop-box" id="cropBox">
@@ -74,6 +75,20 @@
       <div class="retouch-layer" id="retouchLayer" hidden>
         <canvas id="strokeCanvas"></canvas>
         <div class="brush-cursor" id="brushCursor" hidden></div>
+      </div>
+      <div class="source-cursor" id="sourceCursor" hidden></div>
+
+      <div class="zoom-bar" id="zoomBar" hidden>
+        <button class="icon-btn" id="btnZoomOut" title="Verkleinern (−)" aria-label="Verkleinern">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg>
+        </button>
+        <button class="zoom-label" id="zoomLabel" title="Einpassen / 100 % umschalten (0 / 1)">100 %</button>
+        <button class="icon-btn" id="btnZoomIn" title="Vergrößern (+)" aria-label="Vergrößern">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12M12 6v12"/></svg>
+        </button>
+        <button class="icon-btn" id="btnZoomFit" title="Einpassen (0)" aria-label="Einpassen">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+        </button>
       </div>
 
       <div class="badge" id="compareBadge" hidden>Vorher</div>
@@ -104,17 +119,44 @@
       </div>
 
       <div class="tab-panel" data-panel="retouch" hidden>
-        <h3>Fleckenentferner</h3>
-        <p class="help">Male im Bild über Flecken, Pickel, Staub oder kleine störende Objekte. Beim Loslassen wird die Stelle automatisch mit passender Struktur aus der Umgebung aufgefüllt.</p>
+        <h3>Werkzeug</h3>
+        <div class="segmented" role="group" aria-label="Retusche-Werkzeug">
+          <button type="button" class="seg" data-tool="heal" aria-pressed="true" title="Fleckenentferner (J)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8.5" width="18" height="7" rx="3.5" transform="rotate(-45 12 12)"/><path d="M10.5 10.5h.01M13.5 13.5h.01M13.5 10.5h.01M10.5 13.5h.01"/></svg>
+            Reparieren
+          </button>
+          <button type="button" class="seg" data-tool="clone" aria-pressed="false" title="Stempel (S)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l-1 7h-4z"/><path d="M5 14h14v3H5z"/><path d="M7 20h10"/></svg>
+            Stempel
+          </button>
+        </div>
+
+        <p class="help" id="healHelp">Male über Flecken, Pickel, Staub oder kleine störende Objekte. Beim Loslassen wird die Stelle automatisch mit passender Struktur aus der Umgebung aufgefüllt.</p>
+        <p class="help" id="cloneHelp" hidden>Wähle mit <kbd>Alt</kbd>&nbsp;+&nbsp;Klick (oder dem Knopf unten) die Stelle, von der kopiert wird. Male dann über den Bereich, der überdeckt werden soll – die Quelle wandert mit.</p>
+
         <div class="slider-row">
           <div class="slider-head"><label for="brushSize">Pinselgröße</label><output id="brushSizeOut">30</output></div>
-          <input type="range" id="brushSize" min="6" max="160" step="1" value="30">
+          <input type="range" id="brushSize" min="4" max="160" step="1" value="30">
         </div>
+
+        <div id="cloneOptions" hidden>
+          <div class="slider-row">
+            <div class="slider-head"><label for="cloneOpacity">Deckkraft</label><output id="cloneOpacityOut">100</output></div>
+            <input type="range" id="cloneOpacity" min="5" max="100" step="1" value="100">
+          </div>
+          <div class="slider-row">
+            <div class="slider-head"><label for="cloneHardness">Kantenhärte</label><output id="cloneHardnessOut">50</output></div>
+            <input type="range" id="cloneHardness" min="0" max="100" step="1" value="50">
+          </div>
+          <button type="button" class="btn full pick" id="btnPickSource" aria-pressed="false">Quelle im Bild wählen</button>
+          <p class="meta" id="cloneStatus">Noch keine Quelle gewählt.</p>
+        </div>
+
         <ul class="tips">
-          <li>Pinsel etwas größer als den Fleck wählen.</li>
-          <li>Mehrere kurze Striche wirken oft besser als ein langer.</li>
+          <li>Zum genauen Arbeiten hineinzoomen: Mausrad, zwei Finger oder <kbd>+</kbd>/<kbd>−</kbd>. Verschieben mit <kbd>Leertaste</kbd> + Ziehen.</li>
+          <li>Pinsel etwas größer als den Fleck wählen; <kbd>[</kbd> und <kbd>]</kbd> ändern die Größe.</li>
           <li>Jeder Strich lässt sich mit <kbd>Strg</kbd>+<kbd>Z</kbd> rückgängig machen.</li>
-          <li>Tasten <kbd>[</kbd> und <kbd>]</kbd> ändern die Pinselgröße.</li>
+          <li>Werkzeug wechseln: <kbd>J</kbd> Reparieren, <kbd>S</kbd> Stempel.</li>
         </ul>
       </div>
 

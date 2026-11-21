@@ -30,11 +30,16 @@ python3 -m http.server 8000
 - 12 Vorlagen (Lebendig, Warm, Kühl, Vintage, Drama, Schwarzweiß, Noir, Verblasst, Sonnig, Analog, Pop …) mit Live-Vorschau
 - Regelbare Filterstärke
 
-**Retusche – Fleckenentferner**
-- Mit dem Pinsel über Flecken, Pickel, Staub oder kleine störende Objekte malen
-- Die App sucht automatisch eine passende Stelle in der Umgebung, übernimmt deren Struktur und gleicht Farbe und Helligkeit nahtlos an (ähnlich dem Bereichsreparatur-Pinsel)
+**Retusche**
+- *Reparieren* (Fleckenentferner): mit dem Pinsel über Flecken, Pickel, Staub oder kleine störende Objekte malen. Die App sucht automatisch eine passende Stelle in der Umgebung, übernimmt deren Struktur und gleicht Farbe und Helligkeit nahtlos an (ähnlich dem Bereichsreparatur-Pinsel). Am besten geeignet für Haut, Himmel, Wände und ähnlich gleichmäßige Flächen.
+- *Stempel*: Quelle mit <kbd>Alt</kbd> + Klick (oder per Knopf, z. B. auf dem Handy) wählen, dann über die zu überdeckende Stelle malen. Live-Vorschau beim Malen, die Quelle wird als Fadenkreuz angezeigt und wandert mit. Deckkraft und Kantenhärte einstellbar. Ideal, wenn die automatische Reparatur in unruhigen Mustern nicht passt.
 - Pinselgröße per Regler oder mit <kbd>[</kbd> / <kbd>]</kbd>; jeder Strich ist einzeln rückgängig zu machen
-- Am besten geeignet für Flecken auf Haut, Himmel, Wänden und ähnlich gleichmäßigen Flächen; in sehr unruhigen, kontrastreichen Mustern ist das Ergebnis nur eine Annäherung
+
+**Zoom & Verschieben**
+- Mausrad (zum Mauszeiger hin), Zwei-Finger-Geste auf Touchscreens, <kbd>+</kbd> / <kbd>−</kbd>, Zoom-Leiste unten rechts – bis 800 %
+- <kbd>0</kbd> = Einpassen, <kbd>1</kbd> = 100 %; Doppelklick ins Bild schaltet zwischen beiden um
+- Verschieben: <kbd>Leertaste</kbd> + Ziehen, mittlere Maustaste, zwei Finger oder einfach Ziehen (Tabs „Anpassen“ und „Filter“)
+- Beim Hineinzoomen wird der sichtbare Ausschnitt in voller Auflösung berechnet – inklusive aller Anpassungen, pixelgenau wie im Export
 
 **Zuschneiden & Transformieren**
 - Freier Zuschnitt oder feste Seitenverhältnisse (Original, 1:1, 4:3, 3:4, 16:9, 9:16, 3:2, 2:3) mit Drittel-Raster
@@ -58,6 +63,11 @@ python3 -m http.server 8000
 | <kbd>V</kbd> (halten) | Vorher anzeigen |
 | <kbd>Enter</kbd> | Zuschnitt anwenden (im Tab „Zuschneiden“) |
 | <kbd>[</kbd> / <kbd>]</kbd> | Pinsel verkleinern / vergrößern (im Tab „Retusche“) |
+| <kbd>J</kbd> / <kbd>S</kbd> | Reparieren / Stempel (im Tab „Retusche“) |
+| <kbd>Alt</kbd> + Klick | Stempel-Quelle wählen |
+| <kbd>+</kbd> / <kbd>−</kbd> | Hinein- / Herauszoomen |
+| <kbd>0</kbd> / <kbd>1</kbd> | Einpassen / 100 % |
+| <kbd>Leertaste</kbd> + Ziehen | Bildausschnitt verschieben |
 
 Auf dem Mac jeweils <kbd>⌘</kbd> statt <kbd>Strg</kbd>.
 
@@ -72,5 +82,5 @@ Auf dem Mac jeweils <kbd>⌘</kbd> statt <kbd>Strg</kbd>.
 | --- | --- |
 | `index.html` | Oberfläche |
 | `styles.css` | Gestaltung (inkl. Mobil-Layout) |
-| `app.js` | Bildverarbeitung, Retusche, Verlauf, Zuschneiden, Export |
+| `app.js` | Bildverarbeitung, Retusche (Reparieren & Stempel), Zoom, Verlauf, Zuschneiden, Export |
 | `sw.js`, `manifest.webmanifest`, `icon.svg` | Installierbare App / Offline-Nutzung |

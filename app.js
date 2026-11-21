@@ -139,9 +139,13 @@
   /**
    * Wendet alle Anpassungen auf RGBA-Pixel an.
    * Alle Radien sind relativ zur Bildgröße, damit Vorschau und Export gleich aussehen.
+   * frame: optional, wenn nur ein Ausschnitt berechnet wird (Zoom) – Größe des gedachten
+   * Gesamtbilds in dieser Auflösung (W, H) und Lage des Ausschnitts darin (ox, oy).
    */
-  function processPixels(src, w, h, a) {
-    const longEdge = Math.max(w, h);
+  function processPixels(src, w, h, a, frame = null) {
+    const FW = frame ? frame.W : w, FH = frame ? frame.H : h;
+    const ox = frame ? frame.ox : 0, oy = frame ? frame.oy : 0;
+    const longEdge = Math.max(FW, FH);
     let data = src;
 
     if (a.blur > 0) {
@@ -182,7 +186,7 @@
     const fadeLift = fade * 45, fadeScale = 1 - fade * 0.32;
     const vig = a.vignette / 100;
     const grain = (a.grain / 100) * 70;
-    const cx = w / 2, cy = h / 2;
+    const cx = FW / 2, cy = FH / 2;
     // Vignette: Stärke als Funktion des quadrierten Abstands (0 … 2) vorberechnen
     const VIG_SCALE = 2048;
     let vigLut = null;
@@ -197,9 +201,9 @@
     const grainScale = Math.max(1, longEdge / 1600); // Korngröße skaliert mit Auflösung
 
     for (let y = 0; y < h; y++) {
-      const dy = (y - cy) / cy;
-      const dy2 = dy * dy;
-      const gy = Math.floor(y / grainScale);
+      const dy = (y + oy - cy) / cy;
+      const dy2 = Math.min(1, dy * dy);
+      const gy = Math.floor((y + oy) / grainScale);
       for (let x = 0; x < w; x++) {
         const i = (y * w + x) * 4;
         let r = data[i], g = data[i + 1], b = data[i + 2];
@@ -258,8 +262,8 @@
         }
 
         if (vig) {
-          const dx = (x - cx) / cx;
-          const t = vigLut[((dx * dx + dy2) * VIG_SCALE) | 0];
+          const dx = (x + ox - cx) / cx;
+          const t = vigLut[((Math.min(1, dx * dx) + dy2) * VIG_SCALE) | 0];
           if (t > 0) {
             const k = 1 - t * 0.85;
             r *= k; g *= k; b *= k;
@@ -270,7 +274,7 @@
         }
 
         if (grain) {
-          const n = noise(Math.floor(x / grainScale), gy) * grain;
+          const n = noise(Math.floor((x + ox) / grainScale), gy) * grain;
           r += n; g += n; b += n;
         }
 
@@ -563,6 +567,7 @@
       state.lastRenderMs = performance.now() - t0;
     }
     drawHistogram(pixels);
+    scheduleDetail();
   }
 
   function drawHistogram(px) {
@@ -616,9 +621,236 @@
     state.thumbsDirty = true;
     if (state.tab === 'filters') renderThumbs();
 
+    if (view.bw !== b.width || view.bh !== b.height) {
+      Object.assign(view, { zoom: 1, cx: b.width / 2, cy: b.height / 2, bw: b.width, bh: b.height });
+    }
     updateSizeInfo();
     render();
-    requestAnimationFrame(updateOverlays);
+    layoutCanvas();
+  }
+
+  // =====================================================================
+  //  Ansicht: Zoom & Verschieben
+  // =====================================================================
+  const view = { zoom: 1, cx: 0, cy: 0, bw: 0, bh: 0 }; // zoom relativ zu „Einpassen“, (cx, cy) = Bildpunkt in der Bühnenmitte
+  const MAX_SCALE = 8;                                    // 800 %
+  const detailCanvas = $('#detailCanvas');
+  let detailTimer = 0;
+
+  function stageMetrics() {
+    const r = stage.getBoundingClientRect();
+    const pad = parseFloat(getComputedStyle(stage).paddingLeft) || 0;
+    return { r, w: r.width, h: r.height, pad };
+  }
+
+  function fitScale() {
+    const b = state.base;
+    const { w, h, pad } = stageMetrics();
+    return Math.max(0.01, Math.min(1, (w - 2 * pad) / b.width, (h - 2 * pad) / b.height));
+  }
+
+  const viewScale = () => fitScale() * view.zoom;
+  const zoomAllowed = () => state.base && !canvas.hidden && state.tab !== 'crop';
+
+  function layoutCanvas() {
+    if (!state.base || canvas.hidden) return;
+    const b = state.base;
+    const { w, h } = stageMetrics();
+    const sc = viewScale();
+    const dw = b.width * sc, dh = b.height * sc;
+    const halfW = w / (2 * sc), halfH = h / (2 * sc);
+    view.cx = dw <= w ? b.width / 2 : clamp(view.cx, halfW, b.width - halfW);
+    view.cy = dh <= h ? b.height / 2 : clamp(view.cy, halfH, b.height - halfH);
+    Object.assign(canvas.style, {
+      left: `${w / 2 - view.cx * sc}px`, top: `${h / 2 - view.cy * sc}px`,
+      width: `${dw}px`, height: `${dh}px`,
+    });
+    const zoomed = view.zoom > 1.001;
+    stage.classList.toggle('zoomed', zoomed);
+    $('#zoomLabel').textContent = `${Math.round(sc * 100)} %`;
+    $('#btnZoomOut').disabled = !zoomed;
+    $('#btnZoomIn').disabled = sc >= MAX_SCALE - 0.001;
+    $('#zoomBar').hidden = !zoomAllowed();
+    scheduleDetail();
+    updateOverlays();
+  }
+
+  /** Zoomt so, dass der Bildpunkt unter (clientX, clientY) an Ort und Stelle bleibt. */
+  function setZoom(z, clientX, clientY) {
+    if (!zoomAllowed()) return;
+    const { r, w, h } = stageMetrics();
+    const fs = fitScale();
+    z = clamp(z, 1, Math.max(1, MAX_SCALE / fs));
+    const px = clientX == null ? w / 2 : clientX - r.left;
+    const py = clientY == null ? h / 2 : clientY - r.top;
+    const oldSc = fs * view.zoom, newSc = fs * z;
+    const bx = view.cx + (px - w / 2) / oldSc, by = view.cy + (py - h / 2) / oldSc;
+    view.zoom = z;
+    view.cx = bx - (px - w / 2) / newSc;
+    view.cy = by - (py - h / 2) / newSc;
+    layoutCanvas();
+  }
+
+  function zoomStep(dir, clientX, clientY) {
+    setZoom(view.zoom * (dir > 0 ? 1.5 : 1 / 1.5), clientX, clientY);
+  }
+
+  /** Umschalten zwischen „Einpassen“ und 100 %. */
+  function toggleActualSize(clientX, clientY) {
+    if (!zoomAllowed()) return;
+    const fs = fitScale();
+    if (view.zoom > 1.001) setZoom(1);
+    else setZoom(1 / fs, clientX, clientY);
+  }
+
+  function panBy(dx, dy) {
+    const sc = viewScale();
+    view.cx -= dx / sc;
+    view.cy -= dy / sc;
+    layoutCanvas();
+  }
+
+  function scheduleDetail(delay = 140) {
+    clearTimeout(detailTimer);
+    if (!detailCanvas.hidden) detailCanvas.hidden = true;
+    if (view.zoom > 1.001) detailTimer = setTimeout(renderDetail, delay);
+  }
+
+  /**
+   * Beim Hineinzoomen reicht die verkleinerte Vorschau nicht mehr aus. Dann wird nur der
+   * sichtbare Ausschnitt aus dem Originalbild in Bildschirmauflösung berechnet und darübergelegt.
+   */
+  function renderDetail() {
+    clearTimeout(detailTimer);
+    const b = state.base;
+    if (!b || canvas.hidden) return;
+    const sc = viewScale();
+    const dpr = window.devicePixelRatio || 1;
+    if (sc * dpr <= (canvas.width / b.width) * 1.02) { detailCanvas.hidden = true; return; }
+    const s = stage.getBoundingClientRect();
+    const c = canvas.getBoundingClientRect();
+    const k = Math.min(1, sc * dpr);                           // Auflösung des Ausschnitts relativ zum Original
+    const a = state.adj;
+    const FW = b.width * k, FH = b.height * k;
+    const longEdge = Math.max(FW, FH);
+    const plain = state.showOriginal || isDefaultAdj();
+    let marginT = 2;
+    if (!plain && a.blur > 0) marginT += Math.max(1, Math.round((a.blur / 100) * longEdge * 0.012)) * 3;
+    if (!plain && a.sharpen > 0) marginT += Math.max(1, Math.round(longEdge / 1400)) + 1;
+    const mb = Math.ceil(marginT / k);
+    const x0 = clamp(Math.floor((s.left - c.left) / sc) - mb, 0, b.width);
+    const y0 = clamp(Math.floor((s.top - c.top) / sc) - mb, 0, b.height);
+    const x1 = clamp(Math.ceil((s.right - c.left) / sc) + mb, 0, b.width);
+    const y1 = clamp(Math.ceil((s.bottom - c.top) / sc) + mb, 0, b.height);
+    if (x1 <= x0 || y1 <= y0) return;
+    const tw = Math.max(1, Math.round((x1 - x0) * k)), th = Math.max(1, Math.round((y1 - y0) * k));
+    const tile = makeCanvas(tw, th);
+    const tg = ctx2d(tile);
+    tg.imageSmoothingQuality = 'high';
+    tg.drawImage(b, x0, y0, x1 - x0, y1 - y0, 0, 0, tw, th);
+    const id = tg.getImageData(0, 0, tw, th);
+    const px = plain ? id.data : processPixels(id.data, tw, th, a, { W: FW, H: FH, ox: x0 * k, oy: y0 * k });
+    detailCanvas.width = tw;
+    detailCanvas.height = th;
+    detailCanvas.getContext('2d').putImageData(new ImageData(px, tw, th), 0, 0);
+    Object.assign(detailCanvas.style, {
+      left: `${c.left - s.left + x0 * sc}px`, top: `${c.top - s.top + y0 * sc}px`,
+      width: `${(x1 - x0) * sc}px`, height: `${(y1 - y0) * sc}px`,
+      imageRendering: k === 1 && sc * dpr >= 2 ? 'pixelated' : 'auto',
+    });
+    detailCanvas.hidden = false;
+  }
+
+  /** Mausrad, Pinch, Leertaste/Mittelklick/Hand zum Verschieben, Doppelklick. */
+  function initViewInteraction() {
+    let spaceHeld = false;
+    let pan = null;
+    const touches = new Map();
+    let pinch = null;
+
+    const handTool = () => state.tab === 'adjust' || state.tab === 'filters';
+
+    stage.addEventListener('wheel', e => {
+      if (!zoomAllowed() || retouchBusy()) return;
+      e.preventDefault();
+      const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+      setZoom(view.zoom * Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.002)), e.clientX, e.clientY);
+    }, { passive: false });
+
+    stage.addEventListener('pointerdown', e => {
+      if (!zoomAllowed()) return;
+      if (e.target.closest('.zoom-bar')) return;
+      if (e.pointerType === 'touch') {
+        touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (touches.size === 2) {
+          cancelRetouchStroke();
+          pan = null;
+          const [p, q] = [...touches.values()];
+          pinch = { d0: Math.hypot(p.x - q.x, p.y - q.y) || 1, z0: view.zoom, mx: (p.x + q.x) / 2, my: (p.y + q.y) / 2 };
+          e.stopPropagation();
+          return;
+        }
+      }
+      const wantsPan = e.button === 1 || (e.button === 0 && spaceHeld)
+        || (e.button === 0 && handTool() && view.zoom > 1.001);
+      if (!wantsPan) return;
+      e.preventDefault();
+      e.stopPropagation();
+      pan = { id: e.pointerId, x: e.clientX, y: e.clientY };
+      stage.setPointerCapture(e.pointerId);
+      stage.classList.add('panning');
+    }, true);
+
+    stage.addEventListener('pointermove', e => {
+      if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinch && touches.size >= 2) {
+        e.stopPropagation();
+        const [p, q] = [...touches.values()];
+        const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
+        setZoom(pinch.z0 * Math.hypot(p.x - q.x, p.y - q.y) / pinch.d0, mx, my);
+        panBy(mx - pinch.mx, my - pinch.my);
+        pinch.mx = mx; pinch.my = my;
+        return;
+      }
+      if (pan && e.pointerId === pan.id) {
+        e.stopPropagation();
+        panBy(e.clientX - pan.x, e.clientY - pan.y);
+        pan.x = e.clientX; pan.y = e.clientY;
+      }
+    }, true);
+
+    const end = e => {
+      touches.delete(e.pointerId);
+      if (pinch && touches.size < 2) { pinch = null; e.stopPropagation(); }
+      if (pan && e.pointerId === pan.id) { pan = null; stage.classList.remove('panning'); e.stopPropagation(); }
+    };
+    stage.addEventListener('pointerup', end, true);
+    stage.addEventListener('pointercancel', end, true);
+
+    stage.addEventListener('dblclick', e => {
+      if (handTool() && e.target.closest('#canvas, #detailCanvas')) toggleActualSize(e.clientX, e.clientY);
+    });
+
+    window.addEventListener('keydown', e => {
+      if (e.code !== 'Space' || /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== 'range') return;
+      if (!state.base || $('#exportDialog').open) return;
+      e.preventDefault();
+      // Fokus von Knöpfen nehmen, sonst würde die Leertaste sie auslösen
+      if (e.target.tagName === 'BUTTON' || e.target.type === 'range') e.target.blur();
+      spaceHeld = true;
+      stage.classList.add('space');
+    });
+    window.addEventListener('keyup', e => {
+      if (e.code !== 'Space') return;
+      spaceHeld = false;
+      stage.classList.remove('space');
+    });
+    window.addEventListener('blur', () => { spaceHeld = false; stage.classList.remove('space'); });
+
+    $('#btnZoomIn').addEventListener('click', () => zoomStep(1));
+    $('#btnZoomOut').addEventListener('click', () => zoomStep(-1));
+    $('#btnZoomFit').addEventListener('click', () => setZoom(1));
+    $('#zoomLabel').addEventListener('click', () => toggleActualSize());
   }
 
   // =====================================================================
@@ -757,6 +989,8 @@
     state.fileName = name;
     state.history = [];
     state.hIndex = -1;
+    view.bw = 0;
+    resetCloneSource();
 
     $('#emptyState').hidden = true;
     canvas.hidden = false;
@@ -895,6 +1129,7 @@
   // =====================================================================
   function replaceBase(next) {
     state.base = next;
+    resetCloneSource();
     resetCropRect();
     rebuildPreview();
     commit();
@@ -1091,14 +1326,7 @@
     const reach = R + band;
 
     // Pinselstempel entlang des Strichs
-    const stamps = [];
-    const spacing = Math.max(1, R / 4);
-    points.forEach((p, i) => {
-      if (i === 0) { stamps.push(p); return; }
-      const q = points[i - 1];
-      const steps = Math.ceil(Math.hypot(p.x - q.x, p.y - q.y) / spacing);
-      for (let k = 1; k <= steps; k++) stamps.push({ x: q.x + (p.x - q.x) * k / steps, y: q.y + (p.y - q.y) * k / steps });
-    });
+    const stamps = interpolateStroke(points, Math.max(1, R / 4));
 
     let mx0 = Infinity, my0 = Infinity, mx1 = -Infinity, my1 = -Infinity;
     for (const st of stamps) {
@@ -1273,33 +1501,152 @@
     return { x: rx0, y: ry0, before, after };
   }
 
-  // ---------- Pinsel-Interaktion ----------
+  // ---------- Stempel ----------
+  /**
+   * Kopiert Pixel entlang des Pinselstrichs von (Ziel + Versatz) ins Ziel.
+   * Weiche Kante über hardness (0 … 1), Deckkraft über opacity (0 … 1).
+   */
+  function cloneStroke(points, radius, off, opacity, hardness) {
+    const b = state.base;
+    const W = b.width, H = b.height;
+    const R = Math.max(0.75, radius);
+    const odx = Math.round(off.dx), ody = Math.round(off.dy);
+    const stamps = interpolateStroke(points, Math.max(0.5, R / 4));
+
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const st of stamps) {
+      x0 = Math.min(x0, st.x - R); y0 = Math.min(y0, st.y - R);
+      x1 = Math.max(x1, st.x + R); y1 = Math.max(y1, st.y + R);
+    }
+    // Ziel und Quelle müssen im Bild liegen
+    const rx0 = Math.max(0, -odx, Math.floor(x0)), ry0 = Math.max(0, -ody, Math.floor(y0));
+    const rx1 = Math.min(W, W - odx, Math.ceil(x1)), ry1 = Math.min(H, H - ody, Math.ceil(y1));
+    const rw = rx1 - rx0, rh = ry1 - ry0;
+    if (rw <= 0 || rh <= 0) return null;
+
+    const feather = Math.max(1, R * (1 - hardness));
+    const core = R - feather;
+    const alpha = new Float32Array(rw * rh);
+    for (const st of stamps) {
+      const ya = Math.max(ry0, Math.floor(st.y - R)), yb = Math.min(ry1 - 1, Math.ceil(st.y + R));
+      const xa = Math.max(rx0, Math.floor(st.x - R)), xb = Math.min(rx1 - 1, Math.ceil(st.x + R));
+      for (let y = ya; y <= yb; y++) {
+        const dy = y + 0.5 - st.y;
+        for (let x = xa; x <= xb; x++) {
+          const dx = x + 0.5 - st.x;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d >= R) continue;
+          let a = d <= core ? 1 : (R - d) / feather;
+          a = a * a * (3 - 2 * a);
+          const i = (y - ry0) * rw + (x - rx0);
+          if (a > alpha[i]) alpha[i] = a;
+        }
+      }
+    }
+
+    const g = b.getContext('2d');
+    const before = g.getImageData(rx0, ry0, rw, rh);
+    const srcData = g.getImageData(rx0 + odx, ry0 + ody, rw, rh).data;
+    const after = new ImageData(new Uint8ClampedArray(before.data), rw, rh);
+    const out = after.data;
+    let touched = false;
+    for (let i = 0; i < alpha.length; i++) {
+      const a = alpha[i] * opacity;
+      if (a <= 0) continue;
+      touched = true;
+      const o = i * 4;
+      for (let c = 0; c < 4; c++) out[o + c] = before.data[o + c] + (srcData[o + c] - before.data[o + c]) * a;
+    }
+    if (!touched) return null;
+    g.putImageData(after, rx0, ry0);
+    return { x: rx0, y: ry0, before, after };
+  }
+
+  function interpolateStroke(points, spacing) {
+    const stamps = [];
+    points.forEach((p, i) => {
+      if (i === 0) { stamps.push(p); return; }
+      const q = points[i - 1];
+      const steps = Math.ceil(Math.hypot(p.x - q.x, p.y - q.y) / spacing);
+      for (let k = 1; k <= steps; k++) stamps.push({ x: q.x + (p.x - q.x) * k / steps, y: q.y + (p.y - q.y) * k / steps });
+    });
+    return stamps;
+  }
+
+  // ---------- Pinsel-Interaktion (Reparieren & Stempel) ----------
   const retouchLayer = $('#retouchLayer');
   const strokeCanvas = $('#strokeCanvas');
   const brushCursor = $('#brushCursor');
+  const sourceCursor = $('#sourceCursor');
+  const retouch = { tool: 'heal', source: null, offset: null, picking: false, stroke: null, busy: false };
 
-  function brushRadius() {
-    return Number($('#brushSize').value) / 2;
+  const brushRadius = () => Number($('#brushSize').value) / 2;
+  const retouchBusy = () => !!retouch.stroke || retouch.busy;
+
+  function resetCloneSource() {
+    retouch.source = null;
+    retouch.offset = null;
+    retouch.picking = false;
+    syncCloneUI();
   }
 
+  function syncCloneUI() {
+    const clone = retouch.tool === 'clone';
+    $$('.seg').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tool === retouch.tool)));
+    $('#cloneOptions').hidden = !clone;
+    $('#healHelp').hidden = clone;
+    $('#cloneHelp').hidden = !clone;
+    $('#btnPickSource').setAttribute('aria-pressed', String(retouch.picking));
+    $('#btnPickSource').textContent = retouch.picking ? 'Jetzt ins Bild tippen …' : 'Quelle im Bild wählen';
+    $('#cloneStatus').textContent = retouch.source
+      ? 'Quelle gesetzt – jetzt über die zu überdeckende Stelle malen.'
+      : 'Noch keine Quelle gewählt.';
+    retouchLayer.classList.toggle('picking', retouch.picking);
+    if (!clone || !retouch.source) sourceCursor.hidden = true;
+  }
+
+  function cancelRetouchStroke() {
+    if (!retouch.stroke) return;
+    retouch.stroke = null;
+    strokeCanvas.getContext('2d').clearRect(0, 0, strokeCanvas.width, strokeCanvas.height);
+  }
+
+  /** Die Ebene deckt nur den sichtbaren Teil des Bildes ab (beim Zoomen kann das Bild viel größer sein). */
   function updateRetouchLayer() {
     if (state.tab !== 'retouch' || !state.base || canvas.hidden) {
       retouchLayer.hidden = true;
+      sourceCursor.hidden = true;
       return;
     }
     const c = canvas.getBoundingClientRect();
     const s = stage.getBoundingClientRect();
+    const L = Math.max(c.left, s.left), T = Math.max(c.top, s.top);
+    const Rr = Math.min(c.right, s.right), B = Math.min(c.bottom, s.bottom);
     retouchLayer.hidden = false;
     Object.assign(retouchLayer.style, {
-      left: `${c.left - s.left}px`, top: `${c.top - s.top}px`,
-      width: `${c.width}px`, height: `${c.height}px`,
+      left: `${L - s.left}px`, top: `${T - s.top}px`,
+      width: `${Math.max(0, Rr - L)}px`, height: `${Math.max(0, B - T)}px`,
     });
     const dpr = window.devicePixelRatio || 1;
-    const w = Math.round(c.width * dpr), h = Math.round(c.height * dpr);
+    const w = Math.max(1, Math.round((Rr - L) * dpr)), h = Math.max(1, Math.round((B - T) * dpr));
     if (strokeCanvas.width !== w || strokeCanvas.height !== h) {
       strokeCanvas.width = w;
       strokeCanvas.height = h;
     }
+    if (retouch.tool === 'clone' && retouch.source && !retouch.offset) placeSourceCursor(retouch.source);
+  }
+
+  /** Bildschirmposition (relativ zur Bühne) eines Bildpunkts */
+  function baseToStage(p) {
+    const c = canvas.getBoundingClientRect(), s = stage.getBoundingClientRect();
+    const sc = c.width / state.base.width;
+    return { x: c.left - s.left + p.x * sc, y: c.top - s.top + p.y * sc };
+  }
+
+  function placeSourceCursor(baseP) {
+    const q = baseToStage(baseP);
+    sourceCursor.hidden = false;
+    sourceCursor.style.transform = `translate(${q.x}px, ${q.y}px) translate(-50%, -50%)`;
   }
 
   function initRetouch() {
@@ -1307,39 +1654,106 @@
     const syncSize = () => {
       $('#brushSizeOut').textContent = size.value;
       paintTrack(size);
-      const d = Number(size.value);
-      brushCursor.style.width = brushCursor.style.height = `${d}px`;
+      const d = `${size.value}px`;
+      brushCursor.style.width = brushCursor.style.height = d;
+      sourceCursor.style.width = sourceCursor.style.height = d;
     };
     size.addEventListener('input', syncSize);
     syncSize();
 
-    let stroke = null;
-    let busy = false;
+    for (const id of ['cloneOpacity', 'cloneHardness']) {
+      const el = $(`#${id}`);
+      const sync = () => { $(`#${id}Out`).textContent = el.value; paintTrack(el); };
+      el.addEventListener('input', sync);
+      sync();
+    }
+
+    const setTool = tool => {
+      retouch.tool = tool;
+      retouch.picking = false;
+      syncCloneUI();
+      updateRetouchLayer();
+    };
+    $$('.seg').forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool)));
+    $('#btnPickSource').addEventListener('click', () => {
+      retouch.picking = !retouch.picking;
+      syncCloneUI();
+    });
+    syncCloneUI();
+
     const local = e => {
       const r = retouchLayer.getBoundingClientRect();
-      return { x: e.clientX - r.left, y: e.clientY - r.top, W: r.width, H: r.height };
+      const c = canvas.getBoundingClientRect();
+      const sc = c.width / state.base.width;
+      return { x: e.clientX - r.left, y: e.clientY - r.top, bx: (e.clientX - c.left) / sc, by: (e.clientY - c.top) / sc, sc };
     };
     const moveCursor = p => {
       brushCursor.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -50%)`;
+      if (retouch.tool === 'clone' && retouch.source && retouch.offset) {
+        placeSourceCursor({ x: p.bx + retouch.offset.dx, y: p.by + retouch.offset.dy });
+      }
     };
+
+    // Vorschau während des Malens: Reparieren = farbige Spur, Stempel = kopierte Pixel live
     const drawSegment = (a, b) => {
       const g = strokeCanvas.getContext('2d');
-      const dpr = strokeCanvas.width / a.W;
-      g.strokeStyle = g.fillStyle = '#ff8a4c';
-      g.lineCap = g.lineJoin = 'round';
-      g.lineWidth = brushRadius() * 2 * dpr;
+      const r = retouchLayer.getBoundingClientRect();
+      const dpr = strokeCanvas.width / Math.max(1, r.width);
+      const rad = brushRadius();
+      if (retouch.tool === 'heal') {
+        g.strokeStyle = '#ff8a4c';
+        g.lineCap = g.lineJoin = 'round';
+        g.lineWidth = rad * 2 * dpr;
+        g.beginPath();
+        g.moveTo(a.x * dpr, a.y * dpr);
+        g.lineTo(b.x * dpr, b.y * dpr);
+        g.stroke();
+        return;
+      }
+      const { dx, dy } = retouch.offset;
+      const sc = a.sc;
+      const shiftX = -dx * sc, shiftY = -dy * sc;
+      const c = canvas.getBoundingClientRect();
+      g.save();
       g.beginPath();
-      g.moveTo(a.x * dpr, a.y * dpr);
-      g.lineTo(b.x * dpr, b.y * dpr);
-      g.stroke();
+      for (const st of interpolateStroke([a, b], Math.max(1, rad / 3))) {
+        g.moveTo((st.x + rad) * dpr, st.y * dpr);
+        g.arc(st.x * dpr, st.y * dpr, rad * dpr, 0, Math.PI * 2);
+      }
+      g.clip();
+      g.globalAlpha = Number($('#cloneOpacity').value) / 100;
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(canvas, (c.left - r.left + shiftX) * dpr, (c.top - r.top + shiftY) * dpr, c.width * dpr, c.height * dpr);
+      if (!detailCanvas.hidden) {
+        const d = detailCanvas.getBoundingClientRect();
+        g.drawImage(detailCanvas, (d.left - r.left + shiftX) * dpr, (d.top - r.top + shiftY) * dpr, d.width * dpr, d.height * dpr);
+      }
+      g.restore();
     };
 
     retouchLayer.addEventListener('pointerdown', e => {
-      if (e.button !== 0 || busy) return;
+      if (e.button !== 0 || retouch.busy) return;
       e.preventDefault();
-      retouchLayer.setPointerCapture(e.pointerId);
       const p = local(e);
-      stroke = [p];
+      if (retouch.tool === 'clone' && (e.altKey || retouch.picking)) {
+        retouch.source = { x: clamp(p.bx, 0, state.base.width), y: clamp(p.by, 0, state.base.height) };
+        retouch.offset = null;
+        retouch.picking = false;
+        syncCloneUI();
+        placeSourceCursor(retouch.source);
+        return;
+      }
+      if (retouch.tool === 'clone' && !retouch.source) {
+        toast('Wähle zuerst eine Quelle: Alt + Klick ins Bild oder „Quelle im Bild wählen“.');
+        return;
+      }
+      if (retouch.tool === 'clone' && !retouch.offset) {
+        // ausgerichtet: der Versatz gilt ab jetzt für alle weiteren Striche
+        retouch.offset = { dx: retouch.source.x - p.bx, dy: retouch.source.y - p.by };
+      }
+      retouchLayer.setPointerCapture(e.pointerId);
+      retouch.stroke = [p];
+      strokeCanvas.classList.toggle('live', retouch.tool === 'clone');
       moveCursor(p);
       drawSegment(p, p);
     });
@@ -1348,6 +1762,7 @@
       const p = local(e);
       brushCursor.hidden = false;
       moveCursor(p);
+      const stroke = retouch.stroke;
       if (!stroke) return;
       const last = stroke[stroke.length - 1];
       if (Math.hypot(p.x - last.x, p.y - last.y) < 1.5) return;
@@ -1355,45 +1770,52 @@
       drawSegment(last, p);
     });
 
-    retouchLayer.addEventListener('pointerleave', () => { if (!stroke) brushCursor.hidden = true; });
+    retouchLayer.addEventListener('pointerleave', () => { if (!retouch.stroke) brushCursor.hidden = true; });
 
     const finish = async () => {
-      if (!stroke) return;
-      const pts = stroke;
-      stroke = null;
-      busy = true;
+      const pts = retouch.stroke;
+      if (!pts) return;
+      retouch.stroke = null;
+      retouch.busy = true;
       const b = state.base;
-      const scale = b.width / pts[0].W;
-      const basePts = pts.map(p => ({ x: clamp(p.x * scale, 0, b.width), y: clamp(p.y * scale, 0, b.height) }));
-      const radius = brushRadius() * scale;
-      const big = radius * radius * pts.length > 400_000;
-      if (big) { setBusy(true, 'Fleck wird entfernt …'); await nextFrame(); }
+      const sc = pts[0].sc;
+      const basePts = pts.map(p => ({ x: clamp(p.bx, 0, b.width), y: clamp(p.by, 0, b.height) }));
+      const radius = brushRadius() / sc;
+      const heal = retouch.tool === 'heal';
+      const big = radius * radius * pts.length > (heal ? 400_000 : 4_000_000);
+      if (big) { setBusy(true, heal ? 'Fleck wird entfernt …' : 'Wird gestempelt …'); await nextFrame(); }
       try {
-        const patch = healStroke(basePts, radius);
+        const patch = heal
+          ? healStroke(basePts, radius)
+          : cloneStroke(basePts, radius, retouch.offset,
+            Number($('#cloneOpacity').value) / 100, Number($('#cloneHardness').value) / 100);
         if (patch) {
           commitPatch(patch);
           rebuildPreview();
+          renderDetail();
         }
       } finally {
         strokeCanvas.getContext('2d').clearRect(0, 0, strokeCanvas.width, strokeCanvas.height);
         if (big) setBusy(false);
-        busy = false;
+        retouch.busy = false;
       }
     };
     retouchLayer.addEventListener('pointerup', finish);
-    retouchLayer.addEventListener('pointercancel', () => {
-      stroke = null;
-      strokeCanvas.getContext('2d').clearRect(0, 0, strokeCanvas.width, strokeCanvas.height);
-    });
+    retouchLayer.addEventListener('pointercancel', cancelRetouchStroke);
 
-    // [ und ] ändern die Pinselgröße
+    // Tastatur: [ ] Pinselgröße, J Reparieren, S Stempel
     window.addEventListener('keydown', e => {
-      if (state.tab !== 'retouch' || /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== 'range') return;
+      if (state.tab !== 'retouch' || e.ctrlKey || e.metaKey) return;
+      if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== 'range') return;
       if (e.key === '[' || e.key === ']') {
         size.value = Number(size.value) + (e.key === ']' ? 4 : -4);
         syncSize();
-      }
+      } else if (e.key.toLowerCase() === 'j') setTool('heal');
+      else if (e.key.toLowerCase() === 's') setTool('clone');
+      else if (e.key === 'Alt') { e.preventDefault(); retouchLayer.classList.add('alt'); }
     });
+    window.addEventListener('keyup', e => { if (e.key === 'Alt') retouchLayer.classList.remove('alt'); });
+    window.addEventListener('blur', () => retouchLayer.classList.remove('alt'));
   }
 
   // =====================================================================
@@ -1472,7 +1894,8 @@
     $$('.tab').forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === tab)));
     $$('.tab-panel').forEach(p => { p.hidden = p.dataset.panel !== tab; });
     if (tab === 'filters' && state.thumbsDirty) renderThumbs();
-    updateOverlays();
+    if (tab === 'crop') view.zoom = 1;   // Zuschneiden immer auf dem ganzen Bild
+    if (state.base && !canvas.hidden) layoutCanvas(); else updateOverlays();
   }
 
   // =====================================================================
@@ -1484,6 +1907,7 @@
     $('#compareBadge').hidden = !on;
     $('#btnCompare').classList.toggle('active', on);
     render();
+    renderDetail();
   }
 
   // =====================================================================
@@ -1608,11 +2032,15 @@
       else if (mod && (key === 'y' || (key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); }
       else if (!mod && key === 'v' && !e.repeat) setCompare(true);
       else if (!mod && key === 'enter' && state.tab === 'crop' && state.base) applyCrop();
+      else if (!mod && (key === '+' || key === '=')) { e.preventDefault(); zoomStep(1); }
+      else if (!mod && (key === '-' || key === '_')) { e.preventDefault(); zoomStep(-1); }
+      else if (!mod && key === '0') setZoom(1);
+      else if (!mod && key === '1') { if (zoomAllowed()) setZoom(1 / fitScale()); }
     });
     window.addEventListener('keyup', e => { if (e.key.toLowerCase() === 'v') setCompare(false); });
     window.addEventListener('blur', () => setCompare(false));
 
-    new ResizeObserver(() => updateOverlays()).observe(stage);
+    new ResizeObserver(() => layoutCanvas()).observe(stage);
   }
 
   // =====================================================================
@@ -1625,6 +2053,7 @@
   bindEvents();
   initCropInteraction();
   initRetouch();
+  initViewInteraction();
   updateButtons();
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {

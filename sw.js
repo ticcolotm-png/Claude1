@@ -1,5 +1,5 @@
 // Einfacher Offline-Cache: erst Netzwerk, bei fehlender Verbindung aus dem Cache.
-const CACHE = 'fotolabor-v2';
+const CACHE = 'fotolabor-v3';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'icon.svg', 'manifest.webmanifest'];
 
 self.addEventListener('install', e => {
